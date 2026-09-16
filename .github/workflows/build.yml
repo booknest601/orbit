@@ -2,15 +2,37 @@ name: Build
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     tags:
       - expo-orbit-v*
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate_pull_request:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 👀 Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: ⬢ Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+      - name: 🧶 Install workspace node modules
+        run: yarn install --frozen-lockfile
+      - name: 📦️ Build packages
+        run: yarn build
+      - name: ✅ Confirm EAS is disabled for pull requests
+        run: echo "Pull-request validation completed without installing or invoking EAS."
+
   build_on_linux:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: 👀 Checkout
@@ -43,6 +65,7 @@ jobs:
           path: apps/menu-bar/electron/out/make/rpm/x64/*.rpm
 
   build_on_win:
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
       - name: 👀 Checkout
@@ -73,9 +96,8 @@ jobs:
             apps/menu-bar/electron/out/make/squirrel.windows/x64/RELEASES
 
   build_on_macos:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    env:
-      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
     steps:
       - name: 👀 Checkout
         uses: actions/checkout@v4
@@ -87,11 +109,25 @@ jobs:
         run: yarn install --frozen-lockfile
       - name: 📦️ Build packages
         run: yarn build
+      - name: 🔐 Check EAS credentials
+        id: eas_auth
+        shell: bash
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [[ -n "${EXPO_TOKEN//[[:space:]]/}" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping EAS build because EXPO_TOKEN is unavailable."
+          fi
       - name: 📦 Install EAS CLI
-        if: ${{ env.EXPO_TOKEN != '' }}
+        if: steps.eas_auth.outputs.available == 'true'
         run: npm install -g eas-cli
       - name: 🍎 Build and notarize macOS app
-        if: ${{ env.EXPO_TOKEN != '' }}
+        if: steps.eas_auth.outputs.available == 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
         run: eas build --platform ios --profile production --non-interactive
         working-directory: apps/menu-bar
 
@@ -99,6 +135,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/expo-orbit-v')
     needs: [build_on_linux, build_on_win]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: 👀 Checkout
         uses: actions/checkout@v4
